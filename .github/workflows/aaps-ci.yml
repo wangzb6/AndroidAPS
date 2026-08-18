@@ -263,17 +263,28 @@ jobs:
 
       - name: Build APKs
         run: |
-              ./gradlew :app:assemble${{ env.BUILD_VARIANT }} :wear:assemble${{ env.BUILD_VARIANT }} \
-              -Dorg.gradle.jvmargs="-Xmx8g -XX:+UseParallelGC -Xss1024m" \
-              -Dkotlin.daemon.jvm.options="-Xmx2g" \
-              -Dkotlin.compiler.execution.strategy="in-process" \
-              -Dorg.gradle.daemon=true \
-              -Dorg.gradle.workers.max=8 \
-              -Dorg.gradle.caching=true \
-              -Pandroid.injected.signing.store.file="$RUNNER_TEMP/keystore/keystore.jks" \
-              -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
-              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-              -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt of 3"
+            if ./gradlew :app:assemble${{ env.BUILD_VARIANT }} :wear:assemble${{ env.BUILD_VARIANT }} \
+                -Dorg.gradle.jvmargs="-Xmx8g -XX:+UseParallelGC -Xss1024m" \
+                -Dkotlin.daemon.jvm.options="-Xmx2g" \
+                -Dkotlin.compiler.execution.strategy="in-process" \
+                -Dorg.gradle.daemon=true \
+                -Dorg.gradle.workers.max=8 \
+                -Dorg.gradle.caching=true \
+                -Pandroid.injected.signing.store.file="$RUNNER_TEMP/keystore/keystore.jks" \
+                -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+                -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+                -Pandroid.injected.signing.key.password="$KEY_PASSWORD"; then
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "Build failed. Waiting before retry..."
+              sleep 60
+            fi
+          done
+          exit 1
 
       - name: Rename APKs with version
         run: |
