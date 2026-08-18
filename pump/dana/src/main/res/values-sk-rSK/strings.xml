@@ -12,14 +12,13 @@
     <string name="commanderror">Chyba príkazu</string>
     <string name="speederror">Chyba rýchlosti</string>
     <string name="insulinlimitviolation">Prekročený limit inzulínu</string>
-    <string name="boluserrorcode">Požadované: %1$.2fJI Podané: %2$.2fJI Chyba: %3$s</string>
+    <string name="boluserrorcode">Požadované: %1$.2fU Podané: %2$.2fU Chyba: %3$s</string>
     <string name="danar_valuenotsetproperly">Hodnota nenastavená správne</string>
-    <string name="danar_setbasalstep001">Nastavte bazálny krok 0.01JI/h</string>
+    <string name="danar_setbasalstep001">Nastavte bazálny krok 0.01U/h</string>
     <string name="resetpairing">Reset informácií o párovaní?</string>
     <string name="dana_model">%1$s\nModel: %2$02X\nProtokol: %3$02X\nKód: %4$02X</string>
     <string name="processinghistory">Spracúvam udalosť</string>
     <string name="danar_enableextendedbolus">Aktivovať v pumpe predĺžené bolusy</string>
-    <string name="overview_bolusprogress_delivered">Podané</string>
     <string name="overview_bolusprogress_stoped">Zastavené</string>
     <string name="unsupportedfirmware">Nepodporovaný firmware v pumpe</string>
     <string name="pumperror">Chyba pumpy</string>
@@ -85,7 +84,7 @@
     <string name="danarpump_shortname">DANA</string>
     <string name="nobtadapter">Bluetooth adaptér nenájdený</string>
     <string name="devicenotfound">Vybrané zariadenie nenájdené</string>
-    <string name="danar_switchtouhmode">Zmeniť v pumpe režim z JI/d na JI/h</string>
+    <string name="danar_switchtouhmode">Zmeniť v pumpe režim z U/d na U/h</string>
     <string name="danarkoreanpump">Kórejská DanaR</string>
     <string name="danarpump">DanaR</string>
     <string name="pumpdrivercorrected">Ovládač pumpy opravený</string>
@@ -93,7 +92,6 @@
     <string name="danar_disableeasymode">Deaktivovať v pumpe režim EasyUI</string>
     <string name="profile_set_failed">Nastavenie bazálneho profilu zlyhalo</string>
     <string name="danar_bluetooth_status">Stav Bluetooth</string>
-    <string name="danar_iob_label">IOB z pumpy</string>
     <string name="firmware_label">Firmware</string>
     <string name="danar_pump_settings">Nastavenie pumpy Dana</string>
     <string name="time_format_12h">12h</string>
@@ -103,7 +101,7 @@
     <string name="danar_bt_name_title">DanaR Bluetooth zariadenie</string>
     <string name="danars_password_title">Heslo pumpy (iba v1)</string>
     <string name="danar_password_title">Heslo do pumpy</string>
-    <string name="danar_useextended_title">Použiť predĺžené bolusy pre &gt;200%%</string>
+    <string name="danar_useextended_title">Použiť predĺžené bolusy pre &gt;200%</string>
     <string name="bolusspeed">Rýchlosť bolusu</string>
     <string name="selectedpump">Vybraná pumpa</string>
     <string name="rs_loginsulinchange_title">Zaznamenať výmenu zásobníka</string>

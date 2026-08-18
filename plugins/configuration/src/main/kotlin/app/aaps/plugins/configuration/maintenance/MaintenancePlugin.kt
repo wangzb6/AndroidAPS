@@ -3,19 +3,41 @@ package app.aaps.plugins.configuration.maintenance
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import androidx.core.content.FileProvider
+import androidx.documentfile.provider.DocumentFile
+import androidx.preference.PreferenceCategory
+import androidx.preference.PreferenceManager
+import androidx.preference.PreferenceScreen
+import app.aaps.core.data.plugin.PluginType
+import app.aaps.core.data.ue.Action
+import app.aaps.core.data.ue.Sources
 import app.aaps.core.interfaces.configuration.Config
 import app.aaps.core.interfaces.logging.AAPSLogger
 import app.aaps.core.interfaces.logging.LoggerUtils
-import app.aaps.core.interfaces.maintenance.PrefFileListProvider
+import app.aaps.core.interfaces.logging.UserEntryLogger
+import app.aaps.core.interfaces.maintenance.FileListProvider
 import app.aaps.core.interfaces.nsclient.NSSettingsStatus
 import app.aaps.core.interfaces.plugin.PluginBase
 import app.aaps.core.interfaces.plugin.PluginDescription
-import app.aaps.core.interfaces.plugin.PluginType
 import app.aaps.core.interfaces.resources.ResourceHelper
-import app.aaps.core.interfaces.sharedPreferences.SP
+import app.aaps.core.keys.BooleanKey
+import app.aaps.core.keys.IntKey
+import app.aaps.core.keys.StringKey
+import app.aaps.core.keys.interfaces.Preferences
+import app.aaps.core.ui.toast.ToastUtils
+import app.aaps.core.validators.DefaultEditTextValidator
+import app.aaps.core.validators.EditTextValidator
+import app.aaps.core.validators.preferences.AdaptiveIntPreference
+import app.aaps.core.validators.preferences.AdaptiveStringPreference
+import app.aaps.core.validators.preferences.AdaptiveSwitchPreference
 import app.aaps.plugins.configuration.R
-import dagger.android.HasAndroidInjector
+import app.aaps.plugins.configuration.activities.DaggerAppCompatActivityWithResult
+import app.aaps.plugins.configuration.maintenance.cloud.CloudConstants
+import app.aaps.plugins.configuration.maintenance.cloud.CloudStorageManager
+import app.aaps.plugins.configuration.maintenance.cloud.StorageTypes
+import app.aaps.plugins.configuration.maintenance.cloud.ExportOptionsDialog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -30,42 +52,51 @@ import javax.inject.Singleton
 
 @Singleton
 class MaintenancePlugin @Inject constructor(
-    injector: HasAndroidInjector,
     private val context: Context,
     rh: ResourceHelper,
-    private val sp: SP,
+    private val preferences: Preferences,
     private val nsSettingsStatus: NSSettingsStatus,
     aapsLogger: AAPSLogger,
     private val config: Config,
-    private val fileListProvider: PrefFileListProvider,
-    private val loggerUtils: LoggerUtils
+    private val fileListProvider: FileListProvider,
+    private val loggerUtils: LoggerUtils,
+    private val uel: UserEntryLogger,
+    private val cloudStorageManager: CloudStorageManager,
+    private val exportOptionsDialog: ExportOptionsDialog
 ) : PluginBase(
     PluginDescription()
         .mainType(PluginType.GENERAL)
         .fragmentClass(MaintenanceFragment::class.java.name)
-        .alwaysVisible(false)
         .alwaysEnabled(true)
         .pluginIcon(app.aaps.core.ui.R.drawable.ic_maintenance)
         .pluginName(R.string.maintenance)
         .shortName(R.string.maintenance_shortname)
-        .preferencesId(R.xml.pref_maintenance)
+        .preferencesId(PluginDescription.PREFERENCE_SCREEN)
+        .preferencesVisibleInSimpleMode(false)
         .description(R.string.description_maintenance),
-    aapsLogger, rh, injector
+    aapsLogger, rh
 ) {
 
     fun sendLogs() {
-        val recipient = sp.getString(R.string.key_maintenance_logs_email, "logs@aaps.app")
-        val amount = sp.getInt(R.string.key_maintenance_logs_amount, 2)
+        val amount = preferences.get(IntKey.MaintenanceLogsAmount)
         val logs = getLogFiles(amount)
-        val zipDir = fileListProvider.ensureTempDirExists()
-        val zipFile = File(zipDir, constructName())
-        aapsLogger.debug("zipFile: ${zipFile.absolutePath}")
+        val zipFile = fileListProvider.ensureTempDirExists()?.createFile("application/zip", constructName()) ?: return
+        aapsLogger.debug("zipFile: ${zipFile.name}")
         val zip = zipLogs(zipFile, logs)
-        val attachmentUri =
-            FileProvider.getUriForFile(context, config.APPLICATION_ID + ".fileprovider", zip)
-        val emailIntent: Intent = this.sendMail(attachmentUri, recipient, "Log Export")
-        aapsLogger.debug("sending emailIntent")
-        context.startActivity(emailIntent)
+        
+        // Check export destination preference (master switch or individual setting)
+        if ((exportOptionsDialog.isLogCloudEnabled()) && 
+            cloudStorageManager.isCloudStorageActive()) {
+            // Send to Cloud Drive
+            sendLogsToCloudDrive(zip)
+        } else {
+            // Send via email (default behavior)
+            val recipient = preferences.get(StringKey.MaintenanceEmail)
+            val attachmentUri = zip.uri
+            val emailIntent: Intent = this.sendMail(attachmentUri, recipient, "Log Export")
+            aapsLogger.debug("sending emailIntent")
+            context.startActivity(emailIntent)
+        }
     }
 
     fun deleteLogs(keep: Int) {
@@ -76,8 +107,7 @@ class MaintenancePlugin @Inject constructor(
         val autotuneFiles = logDir.listFiles { _: File?, name: String ->
             (name.startsWith("autotune") && name.endsWith(".zip"))
         }
-        val amount = sp.getInt(R.string.key_logshipper_amount, keep)
-        val keepIndex = amount - 1
+        val keepIndex = keep - 1
         if (autotuneFiles != null && autotuneFiles.isNotEmpty()) {
             Arrays.sort(autotuneFiles) { f1: File, f2: File -> f2.name.compareTo(f1.name) }
             var delAutotuneFiles = listOf(*autotuneFiles)
@@ -98,11 +128,8 @@ class MaintenancePlugin @Inject constructor(
             }
         }
         val exportDir = fileListProvider.ensureTempDirExists()
-        if (exportDir.exists()) {
-            exportDir.listFiles()?.let { expFiles ->
-                for (file in expFiles) file.delete()
-            }
-            exportDir.delete()
+        exportDir?.listFiles()?.let { expFiles ->
+            for (file in expFiles) file.delete()
         }
     }
 
@@ -133,8 +160,8 @@ class MaintenancePlugin @Inject constructor(
         return result.subList(0, toIndex)
     }
 
-    fun zipLogs(zipFile: File, files: List<File>): File {
-        aapsLogger.debug("creating zip ${zipFile.absolutePath}")
+    fun zipLogs(zipFile: DocumentFile, files: List<File>): DocumentFile {
+        aapsLogger.debug("creating zip ${zipFile.name}")
         try {
             zip(zipFile, files)
         } catch (e: IOException) {
@@ -155,9 +182,9 @@ class MaintenancePlugin @Inject constructor(
         return "AndroidAPS_LOG_" + System.currentTimeMillis() + loggerUtils.suffix
     }
 
-    private fun zip(zipFile: File?, files: List<File>) {
+    private fun zip(zipFile: DocumentFile, files: List<File>) {
         val bufferSize = 2048
-        val out = ZipOutputStream(BufferedOutputStream(FileOutputStream(zipFile)))
+        val out = ZipOutputStream(BufferedOutputStream(FileOutputStream(context.contentResolver.openFileDescriptor(zipFile.uri, "w")?.fileDescriptor)))
         for (file in files) {
             val data = ByteArray(bufferSize)
             FileInputStream(file).use { fileInputStream ->
@@ -185,7 +212,7 @@ class MaintenancePlugin @Inject constructor(
         builder.append("you have to do it manually)" + System.lineSeparator())
         builder.append("-------------------------------------------------------" + System.lineSeparator())
         builder.append(rh.gs(config.appName) + " " + config.VERSION + System.lineSeparator())
-        if (config.NSCLIENT) builder.append("NSCLIENT" + System.lineSeparator())
+        if (config.AAPSCLIENT) builder.append("NSCLIENT" + System.lineSeparator())
         builder.append("Build: " + config.BUILD_VERSION + System.lineSeparator())
         builder.append("Remote: " + config.REMOTE + System.lineSeparator())
         builder.append("Flavor: " + config.FLAVOR + config.BUILD_TYPE + System.lineSeparator())
@@ -224,5 +251,128 @@ class MaintenancePlugin @Inject constructor(
         emailIntent.putExtra(Intent.EXTRA_STREAM, attachmentUri)
         emailIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return emailIntent
+    }
+
+    private fun sendLogsToCloudDrive(zipFile: DocumentFile) {
+        try {
+            aapsLogger.debug("Sending logs to cloud storage")
+            
+            // Read zip file contents
+            val inputStream = context.contentResolver.openInputStream(zipFile.uri)
+            val bytes = inputStream?.use { it.readBytes() }
+            
+            if (bytes != null) {
+                // Upload to cloud storage
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val provider = cloudStorageManager.getActiveProvider()
+                        if (provider == null) {
+                            aapsLogger.error("No active cloud provider")
+                            fallbackToEmailLogs(zipFile)
+                            return@launch
+                        }
+                        
+                        // First set selected folder, then try path upload
+                        provider.getOrCreateFolderPath(CloudConstants.CLOUD_PATH_LOGS)?.let { 
+                            provider.setSelectedFolderId(it) 
+                        }
+                        
+                        ToastUtils.longInfoToast(context, rh.gs(R.string.uploading_to_cloud))
+
+                        var uploadedFileId = provider.uploadFileToPath(
+                            zipFile.name ?: "logs.zip",
+                            bytes,
+                            "application/zip",
+                            CloudConstants.CLOUD_PATH_LOGS
+                        )
+                        if (uploadedFileId == null) {
+                            uploadedFileId = provider.uploadFile(zipFile.name ?: "logs.zip", bytes, "application/zip")
+                        }
+                        
+                        if (uploadedFileId != null) {
+                            aapsLogger.debug("Logs successfully uploaded to cloud storage: $uploadedFileId")
+                            ToastUtils.infoToast(context, rh.gs(R.string.logs_uploaded_to_cloud) + "\n" + rh.gs(R.string.cloud_directory_path, CloudConstants.CLOUD_PATH_LOGS))
+                        } else {
+                            aapsLogger.error("Failed to upload logs to cloud storage")
+                            ToastUtils.errorToast(context, rh.gs(R.string.logs_upload_failed))
+                            
+                            // Fallback to email
+                            fallbackToEmailLogs(zipFile)
+                        }
+                    } catch (e: Exception) {
+                        aapsLogger.error("Error uploading logs to cloud storage", e)
+                        ToastUtils.errorToast(context, rh.gs(R.string.logs_upload_error))
+                        
+                        // Fallback to email
+                        fallbackToEmailLogs(zipFile)
+                    }
+                }
+            } else {
+                aapsLogger.error("Failed to read zip file contents")
+                fallbackToEmailLogs(zipFile)
+            }
+        } catch (e: Exception) {
+            aapsLogger.error("Error preparing logs for cloud upload", e)
+            fallbackToEmailLogs(zipFile)
+        }
+    }
+    
+    private fun fallbackToEmailLogs(zipFile: DocumentFile) {
+        aapsLogger.debug("Falling back to email for log sending")
+        val recipient = preferences.get(StringKey.MaintenanceEmail)
+        val attachmentUri = zipFile.uri
+        val emailIntent: Intent = this.sendMail(attachmentUri, recipient, "Log Export")
+        aapsLogger.debug("sending emailIntent")
+        context.startActivity(emailIntent)
+    }
+
+    fun selectAapsDirectory(activity: DaggerAppCompatActivityWithResult) {
+        try {
+            uel.log(Action.SELECT_DIRECTORY, Sources.Maintenance)
+            activity.accessTree?.launch(null)
+        } catch (_: Exception) {
+            ToastUtils.errorToast(activity, "Unable to launch activity. This is an Android issue")
+        }
+    }
+
+    override fun addPreferenceScreen(preferenceManager: PreferenceManager, parent: PreferenceScreen, context: Context, requiredKey: String?) {
+        if (requiredKey != null && !(requiredKey == "data_choice_setting" || requiredKey == "unattended_export_setting")) return
+        val category = PreferenceCategory(context)
+        parent.addPreference(category)
+        category.apply {
+            key = "maintenance_settings"
+            title = rh.gs(R.string.maintenance_settings)
+            initialExpandedChildrenCount = 0
+            addPreference(
+                AdaptiveStringPreference(
+                    ctx = context, stringKey = StringKey.MaintenanceEmail, dialogMessage = R.string.maintenance_email, title = R.string.maintenance_email,
+                    validatorParams = DefaultEditTextValidator.Parameters(testType = EditTextValidator.TEST_EMAIL)
+                )
+            )
+            addPreference(AdaptiveIntPreference(ctx = context, intKey = IntKey.MaintenanceLogsAmount, title = R.string.maintenance_amount))
+            addPreference(preferenceManager.createPreferenceScreen(context).apply {
+                key = "data_choice_setting"
+                title = rh.gs(R.string.data_choices)
+                addPreference(AdaptiveSwitchPreference(ctx = context, booleanKey = BooleanKey.MaintenanceEnableFabric, title = R.string.fabric_upload))
+                addPreference(AdaptiveStringPreference(ctx = context, stringKey = StringKey.MaintenanceIdentification, title = R.string.identification))
+            })
+
+            addPreference(preferenceManager.createPreferenceScreen(context).apply {
+                key = "unattended_export_setting"
+                title = rh.gs(R.string.unattended_settings_export)
+                addPreference(
+                    AdaptiveSwitchPreference(
+                        ctx = context, booleanKey = BooleanKey.MaintenanceEnableExportSettingsAutomation,
+                        title = R.string.unattended_settings_export,
+                        summary = R.string.unattended_settings_export_summary
+                    )
+                )
+                // addPreference(AdaptiveIntPreference(ctx = context, intKey = IntKey.AutoExportPasswordExpiryDays,
+                //     title = R.string.unattended_settings_export_password_expiry,
+                //     summary = R.string.unattended_settings_export_password_expiry_summary
+                //     )
+                // )
+            })
+        }
     }
 }
